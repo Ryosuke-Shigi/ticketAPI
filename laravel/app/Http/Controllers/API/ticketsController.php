@@ -828,6 +828,7 @@ class ticketsController extends BaseController
                     elseif($temp->ticket_status==0){
 
                         //ステータスが０の時の条件がさらにあります
+                        //条件まち
 
 
                     }

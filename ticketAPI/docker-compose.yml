@@ -1,0 +1,40 @@
+version: "3"
+volumes:
+  db-store:
+  php-fpm-socket:
+services:
+  app:
+    build: ./docker/php
+    volumes:
+      - php-fpm-socket:/var/run/php-fpm
+      - ../laravel:/work/laravel
+    restart: always
+
+  web:
+    build: ./docker/nginx
+    ports:
+      - 8080:80
+    volumes:
+      - php-fpm-socket:/var/run/php-fpm
+      - ../laravel:/work/laravel
+
+  db:
+    build: ./docker/mysql
+    volumes:
+      - db-store:/var/lib/mysql
+    ports:
+      - 3309:3306
+
+  phpmyadmin:
+    image: phpmyadmin/phpmyadmin
+    depends_on:
+      - db
+    environment:
+      - PMA_ARBITRARY=1
+      - PMA_HOSTS=db
+      - PMA_USER=ada
+      - PMA_PASSWORD=lovelace
+    ports:
+      - 8081:80
+    volumes:
+      - ./docker/phpmyadmin/sessions:/sessions

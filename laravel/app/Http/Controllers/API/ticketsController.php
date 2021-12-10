@@ -525,7 +525,6 @@ class ticketsController extends BaseController
         }
 
 
-
         //dump($request->ticket_types[0]['type_id']);
         //m_tickets_types(tables05)
         //tables05[biz_Id][ticket_code][type_id]　同一存在確認
@@ -659,8 +658,12 @@ class ticketsController extends BaseController
             $tables08->ticket_buyday = $nowTime;
             $tables08->ticket_interval_start = $m_tables07->ticket_interval_start;
             $tables08->ticket_interval_end = $m_tables07->ticket_interval_end;
+
+            //とりあえずそれぞれ　interval_start end を入れる
             $tables08->ticket_start = $m_tables07->ticket_interval_start;
+            //２０２１　１２　０９の段階で　課題試験のため直接変更をかけます
             $tables08->ticket_end = $m_tables07->ticket_interval_end;
+
             //購入枚数？？　複数でリクエストがあった場合はトータルをforeachで合計して出すようにしなくてはいけない
             $tables08->ticket_total_num = $buy_num_total;
             $tables08->cancel_limit_start = $m_tables07->ticket_interval_end;
@@ -723,7 +726,6 @@ class ticketsController extends BaseController
             DB::RollBack();
             //throw $exception;//例外を投げる ここで処理が終わる
             //return array('status'=>-1,'error_message'=>"登録エラー");
-
             return $this->_error(0);
         }
     }
@@ -763,6 +765,9 @@ class ticketsController extends BaseController
     }
 
 
+
+
+
     //get 売上日付の開始と終了と何Page目かを受け取って、
     //NO　商品番号　チケット名　販売期間　券種　価格　キャンセル料金
     //売上枚数　キャンセル料なしはいくつか　キャンセル料ありはいくつか　合計金額　を返す
@@ -775,80 +780,86 @@ class ticketsController extends BaseController
          $tableAll = DB::table('tables01')
         ->join('tables02','tables01.ticket_code','=','tables02.ticket_code')
         ->join('tables05','tables01.ticket_code','=','tables05.ticket_code')
-
-        ->whereDate('tables02.sales_interval_end','>=',$request->interval_start)
-        ->whereDate('tables02.sales_interval_end','<=',$request->interval_end)
-
         ->paginate($request->num,'*','page',$request->page);
 
         //基本にデータをいれる
         $value['total']=$tableAll->total();
         $value['lastpage']=$tableAll->lastpage();
         //一度Jsonデータにエンコードしてからデコードすると　単純なデータ構造の配列になる
-        $value['tickets']=json_decode(json_encode($tableAll->items()),true);
-
-        //↑をキャストで試してみたが、できななかった。。。
-        //$value['tickets']=(array)($tableAll->items());
-
-        //必要データを追加する
-        //table08,09,10を繋げる
-        $addData = DB::table('tables08')
-                ->join('tables09','tables08.reserv_code','=','tables09.reserv_code')
-                ->join('tables10','tables08.reserv_code','=','tables10.reserv_code')
-                ->get();
+        //$value['tickets']=json_decode(json_encode($tableAll->items()),true);
 
         //売上枚数をとる
         //中部の条件でカウントを変更していく
-        foreach($value['tickets'] as $index=>$table){
-            $buy_num=0;//売上数
-            $cancel_num=0;//キャンセル数
+        foreach($tableAll->items() as $index=>$table){
+            $ticket = (array)$table;    //チケットのデータをまとめて入れる
+                                        //最終的に$value['tickets']へ
+                                        //構造体から配列へキャスト
+            $buy_num=0;     //売り上げカウント用：売上数
+            $cancel_num=0;  //売り上げカウント用：キャンセル数
+            //比較用　売上日付開始/終了を取得　時間を初期とラストに合せる
+            $start = new Carbon($request->interval_start." 00:00:00");
+            $end = new Carbon($request->interval_end." 23:59:59");
+
+            //tables08の情報を ticket_code と ticket_name で絞って取得
+            $addData = DB::table('tables08')
+                        ->join('tables09','tables08.reserv_code','=','tables09.reserv_code')
+                        ->join('tables10','tables08.reserv_code','=','tables10.reserv_code')
+                        ->where('tables08.ticket_code','=',$table->ticket_code)
+                        ->where('tables08.ticket_name','=',$table->ticket_name)
+                        ->where('tables10.type_id','=',$table->type_id)
+                        ->get();
+
+            //購入された各チケットのステータスを判断
+            //　０：未使用　３：期限切れ　ticket_endがinterval_startとendの間
+            //　１：使用中　２：使用済み　svc_startがinterval_startとendの間
+            //　９：キャンセル　１０：キャンセル（超過）
             foreach($addData as $temp){
-                if(($table['ticket_code']==$temp->ticket_code) && ($table['ticket_name']==$temp->ticket_name) && ($table['type_id']==$temp->type_id)){
-                    //比較用　売上日付開始/終了を取得
-                    $start = new Carbon($request->interval_start);
-                    $end = new Carbon($request->interval_end);
-                    if(($temp->ticket_status==1) || ($temp->ticket_status==2)){
-                        $middle = new Carbon($temp->svc_start);
-                        if($middle->between($start,$end)){
-                            $buy_num+=$temp->buy_num;
-                        }
-                    }elseif($temp->ticket_status==3){
+                switch($temp->ticket_status){
+                    case 0:
+                    case 3:
                         $middle = new Carbon($temp->ticket_end);
                         if($middle->between($start,$end)){
                             $buy_num+=$temp->buy_num;
                         }
-                    }elseif($temp->ticket_status==9 || $temp->ticket_status==10){
+                        break;
+
+                    case 1:
+                    case 2:
+                        if($temp->svc_id == 1){
+                            $middle = new Carbon($temp->svc_start);
+                            if($middle->between($start,$end)){
+                                $buy_num += DB::table('tables10')
+                                ->where('reserv_code','=',$temp->reserv_code)
+                                ->where('type_id','=',$temp->type_id)
+                                ->get()->sum('buy_num');
+                            }
+                        }
+                        break;
+                    case 9:
+                    case 10:
                         $middle = new Carbon($temp->updated_at);
                         if($middle->between($start,$end)){
-                            //キャンセル料なし
                             $buy_num+=$temp->buy_num;
                             $cancel_num+=$temp->buy_num;
                         }
-                    }
-                    elseif($temp->ticket_status==0){
-
-                        //ステータスが０の時の条件がさらにあります
-                        //条件まち
-
-
-                    }
+                        break;
                 }
             }
-
-            //追加　総売上数（キャンセル有無なし）数のカウント以外はそのまま値をとるだけです
-            $value['tickets'][$index]+=array("buy_num"=>$buy_num);
+            //追加　購入数
+            $ticket+=array('buy_num'=>$buy_num);
             //追加　キャンセル枚数
-            $value['tickets'][$index]+=array("cancel_num"=>$cancel_num);
-            //追加　キャンセルなし枚数
-            $value['tickets'][$index]+=array("no_cancel_num"=>$buy_num-$cancel_num);
+            $ticket+=array("cancel_num"=>$cancel_num);
+            //追加　キャンセル料なし枚数
+            $ticket+=array("no_cancel_num"=>$buy_num-$cancel_num);
             //キャンセル料を計算して登録
-            $value['tickets'][$index]+=array("cancel_money"=>round($value['tickets'][$index]['type_money']*$value['tickets'][$index]['cancel_rate']/100));
+            $ticket+=array("cancel_money"=>round($ticket['type_money']*$ticket['cancel_rate']/100));
             //合計額
-            $value['tickets'][$index]+=array("total_money"=>($value['tickets'][$index]['type_money']*$value['tickets'][$index]['no_cancel_num'])+($value['tickets'][$index]['cancel_money']*$cancel_num));
-
+            $ticket+=array("total_money"=>($ticket['type_money']*$ticket['no_cancel_num'])+($ticket['cancel_money']*$cancel_num));
+            //dump($ticket);
+            //まとめたチケットデータをticketsにプッシュ
+            array_push($value['tickets'],$ticket);
         }
 
-        dump($value);
 
         return $value;
     }

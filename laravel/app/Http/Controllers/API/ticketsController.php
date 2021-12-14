@@ -825,15 +825,32 @@ class ticketsController extends BaseController
 
                     case 1:
                     case 2:
-                        if($temp->svc_id == 1){
-                            $middle = new Carbon($temp->svc_start);
-                            if($middle->between($start,$end)){
+                        $middle = new Carbon($temp->svc_start);
+                        if($middle->between($start,$end)){
+                            //reserv_codeでまとめて抽出して　一番svc_startが古いデータを１件取得
+                            $reservData=DB::table('tables08')
+                                ->join('tables09','tables08.reserv_code','=','tables09.reserv_code')
+                                ->join('tables10','tables08.reserv_code','=','tables10.reserv_code')
+                                ->where('tables08.reserv_code','=',$temp->reserv_code)
+                                ->whereNotNull('tables09.svc_start')//svc_startがNULLを省く
+                                ->oldest('tables09.svc_start')      //svc_startで昇順に並び変え
+                                ->first();                          // ※最も古いデータを出す
+                            //今カウントしようとしているものが一番古いデータであれば
+                            //この条件であれば　複数あろうとなかろうと　一番古いデータを扱う
+
+                            //日付比較のため　Carbon
+                            $old = new Carbon($reservData->svc_start);
+                            $nowdate = new Carbon($temp->svc_start);
+                            //一番古いデータとsvc_startが同じであれば（一番古ければ）
+                            if($old->eq($nowdate)){
+                                //売り上げ枚数の合計を出す
                                 $buy_num += DB::table('tables10')
                                 ->where('reserv_code','=',$temp->reserv_code)
                                 ->where('type_id','=',$temp->type_id)
                                 ->get()->sum('buy_num');
+                                dump($buy_num);
                             }
-                        }
+                          }
                         break;
                     case 9:
                     case 10:

@@ -848,7 +848,6 @@ class ticketsController extends BaseController
                                 ->where('reserv_code','=',$temp->reserv_code)
                                 ->where('type_id','=',$temp->type_id)
                                 ->get()->sum('buy_num');
-                                dump($buy_num);
                             }
                           }
                         break;
@@ -877,6 +876,145 @@ class ticketsController extends BaseController
             array_push($value['tickets'],$ticket);
         }
 
+        return $value;
+    }
+
+
+
+
+        //get 売上日付の開始と終了と何Page目かを受け取って、
+    //NO　商品番号　チケット名　販売期間　券種　価格　キャンセル料金
+    //売上枚数　キャンセル料なしはいくつか　キャンセル料ありはいくつか　合計金額　を返す
+    public function salesManagement_data_select_btn_id(REQUEST $request){
+        //返し値配列初期化
+        //総件数、ページ数、チケット情報　を返す
+        $value = array('total'=>0,'lastpage'=>0,'tickets'=>array());
+
+        //返し値の基本を作成　日付で抽出
+         $tableAll = DB::table('tables01')
+        ->join('tables02','tables01.ticket_code','=','tables02.ticket_code')
+        ->join('tables05','tables01.ticket_code','=','tables05.ticket_code')
+        ->join('tables06','tables01.ticket_code','=','tables06.ticket_code')
+        //->join('tables09','tables06.svc_name','=','tables09.svc_name')
+        ->paginate($request->num,'*','page',$request->page);
+
+        $searchTable = array();
+        foreach($tableAll->items() as $index=>$table){
+            $btnTable = DB::table('tables09')
+            ->where('svc_name',$table->svc_name)
+            ->select('select_btn_id')
+            ->groupBy('select_btn_id')
+            ->get();
+            foreach($btnTable as $btns){
+                $temp=(array)$table;
+                $temp+=(array)$btns;
+                array_push($searchTable,$temp);
+            }
+        }
+
+
+        //基本にデータをいれる
+        $value['total']=$tableAll->total();
+        $value['lastpage']=$tableAll->lastpage();
+        //一度Jsonデータにエンコードしてからデコードすると　単純なデータ構造の配列になる
+        //$value['tickets']=json_decode(json_encode($tableAll->items()),true);
+
+        //売上枚数をとる
+        //中部の条件でカウントを変更していく
+        foreach($searchTable as $index=>$table){
+            $ticket = $table;    //チケットのデータをまとめて入れる
+                                        //最終的に$value['tickets']へ
+                                        //構造体から配列へキャスト
+            $buy_num=0;     //売り上げカウント用：売上数
+            $cancel_num=0;  //売り上げカウント用：キャンセル数
+            //比較用　売上日付開始/終了を取得　時間を初期とラストに合せる
+            $start = new Carbon($request->interval_start." 00:00:00");
+            $end = new Carbon($request->interval_end." 23:59:59");
+
+            //tables08、０９，１０の情報を ticket_code と ticket_name で絞って取得
+            $addData = DB::table('tables08')
+                        ->join('tables09','tables08.reserv_code','=','tables09.reserv_code')
+                        ->join('tables10','tables08.reserv_code','=','tables10.reserv_code')
+                        ->where('tables08.ticket_code','=',$table['ticket_code'])
+                        ->where('tables08.ticket_name','=',$table['ticket_name'])
+                        ->where('tables10.type_id','=',$table['type_id'])
+                        ->get();
+            //購入された各チケットのステータスを判断
+            //　０：未使用　３：期限切れ　ticket_endがinterval_startとendの間
+            //　１：使用中　２：使用済み　svc_startがinterval_startとendの間
+            //　９：キャンセル　１０：キャンセル（超過）
+            foreach($addData as $temp){
+                switch($temp->ticket_status){
+                    case 0:
+                    case 3:
+                        $middle = new Carbon($temp->ticket_end);
+                        if($middle->between($start,$end) && $temp->select_btn_id==$table['select_btn_id']){
+                            $buy_num+=$temp->buy_num;
+                        }
+                        break;
+
+                    case 1:
+                    case 2:
+                        $middle = new Carbon($temp->svc_start);
+                        if($middle->between($start,$end)){
+                            //reserv_codeでまとめて抽出して　一番svc_startが古いデータを１件取得
+                            //一番古いデータを検索
+                            $reservData=DB::table('tables08')
+                                ->join('tables09','tables08.reserv_code','=','tables09.reserv_code')
+                                ->join('tables10','tables08.reserv_code','=','tables10.reserv_code')
+                                ->where('tables08.reserv_code','=',$temp->reserv_code)
+                                ->whereNotNull('tables09.svc_start')//svc_startがNULLを省く
+                                ->oldest('tables09.svc_start')      //svc_startで昇順に並び変え
+                                ->first();                          // ※最も古いデータを出す
+
+                            //今カウントしようとしているものが一番古いデータであれば
+                            //この条件であれば　複数あろうとなかろうと　一番古いデータを扱う
+                            //日付比較のため　Carbon
+                            $old = new Carbon($reservData->svc_start);
+                            $nowdate = new Carbon($temp->svc_start);
+                            //一番古いデータとsvc_startが同じであれば（一番古ければ）
+                            //かつ　現在検索中のチケットのselect_btn_idと同じものであれば　合計を出す
+                            if($old->eq($nowdate) && $temp->select_btn_id==$table['select_btn_id']){
+                                $test = DB::table('tables10')
+                                ->join('tables09','tables09.reserv_code','=','tables10.reserv_code')
+                                ->where('tables10.reserv_code','=',$temp->reserv_code)
+                                ->where('tables10.type_id','=',$temp->type_id)
+                                ->where('tables09.select_btn_id','=',$table['select_btn_id'])
+                                ->get();
+                                dump($test);
+                                //売り上げ枚数の合計を出す
+                                $buy_num += DB::table('tables10')
+                                ->where('reserv_code','=',$temp->reserv_code)
+                                ->where('type_id','=',$temp->type_id)
+                                ->get()->sum('buy_num');
+                            }
+                          }
+                        break;
+                    case 9:
+                    case 10:
+                        $middle = new Carbon($temp->updated_at);
+                        if($middle->between($start,$end) && $temp->select_btn_id==$table['select_btn_id']){
+                            $buy_num+=$temp->buy_num;
+                            $cancel_num+=$temp->buy_num;
+                        }
+                        break;
+                }
+            }
+
+            //追加　購入数
+            $ticket+=array('buy_num'=>$buy_num);
+            //追加　キャンセル枚数
+            $ticket+=array("cancel_num"=>$cancel_num);
+            //追加　キャンセル料なし枚数
+            $ticket+=array("no_cancel_num"=>$buy_num-$cancel_num);
+            //キャンセル料を計算して登録
+            $ticket+=array("cancel_money"=>round($ticket['type_money']*$ticket['cancel_rate']/100));
+            //合計額
+            $ticket+=array("total_money"=>($ticket['type_money']*$ticket['no_cancel_num'])+($ticket['cancel_money']*$cancel_num));
+            //dump($ticket);
+            //まとめたチケットデータをticketsにプッシュ
+            array_push($value['tickets'],$ticket);
+        }
 
         return $value;
     }
